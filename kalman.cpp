@@ -42,11 +42,6 @@
 #define GLCALL(function) function;
 #endif
 
-float normalize(float Input)
-{
-   return Input - 360.0f * std::floor((Input + 180.0f)/(360.0f));
-}
-
 // initial parameters
 int n_iter = 50;
 float x = -0.37727; // truth value
@@ -228,7 +223,7 @@ int main(int argc, char* argv[])
    bool generate_measurements = false;
    int min = 50;
    int max = 900;
-   int number_of_iterations = 50; // we don't support this yet
+   int number_of_iterations = 50;
 
    while (window)
    {
@@ -285,60 +280,6 @@ int main(int argc, char* argv[])
          ImPlot::PlotLine("A Priori Error Estimate", &x_axis[2], &Pminus[2], n_iter-2);
          ImPlot::EndPlot();
       }
-
-#if 0
-      if (ImGui::SliderFloat("Time Constant", &time_constant, 0.0, 10.0, "%.6f"))
-      {
-         lag_filter_c1 = exp(-0.016666 / time_constant);
-         lag_filter_c2 = 1.0 - lag_filter_c1;
-      }
-      ImGui::Text("Lag Filter C1: %f", lag_filter_c1);
-      ImGui::Text("Lag Filter C2: %f", lag_filter_c2);
-      ImGui::Checkbox("Original Filter", &use_orig_filter);
-      ImGui::SliderFloat("Heading Input", &heading_input, -540.0, 540.0, "%.6f");
-
-      // Handle boundary condition
-      heading_input_norm_0_360 = heading_input;
-      if (heading_input_norm_0_360 > 360.0)
-      {
-         heading_input_norm_0_360 -= 360.0;
-      }
-      else if (heading_input_norm_0_360 < 0.0)
-      {
-         heading_input_norm_0_360 += 360.0;
-      }
-
-      ImGui::Separator();
-      ImGui::SliderFloat("Heading Input Normalized", &heading_input_norm_0_360, -540.0, 540.0, "%.6f");
-      ImGui::SliderFloat("Heading Command", &heading_cmd, -540.0, 540.0, "%.6f");
-      ImGui::SliderFloat("Heading Filtered", &heading_filtered, -540.0, 540.0, "%.6f");
-      ImGui::SliderFloat("Heading Output", &heading_output, -540.0, 540.0, "%.6f");
-
-      heading_cmd = heading_input_norm_0_360;
-
-      if (use_orig_filter)
-      {
-         // Lag filter with boundary issues
-         heading_filtered = lag_filter_c1 * heading_filtered + lag_filter_c2 * heading_cmd;
-         heading_delta = heading_filtered - heading_filtered_prev;
-      }
-      else
-      {
-         // Calculate shortest angular distance (-180 to 180)
-         heading_delta = fmodf((heading_cmd - heading_output + 180.0f), 360.0f) - 180.0f;
-
-         heading_filtered = fmodf((heading_filtered + lag_filter_c2 * heading_delta), 360.0f);
-      }
-
-      heading_output = normalize(heading_filtered);
-
-      heading_filtered_prev = heading_filtered;
-
-      deltas[offset] = heading_delta;
-      offset = (offset + 1) % IM_ARRAYSIZE(deltas);
-      ImGui::Text("Delta: %f", heading_delta);
-      ImGui::PlotLines("Delta", deltas, IM_ARRAYSIZE(deltas), offset, nullptr, -180.0f, 180.0f, ImVec2(0, 80.0f));
-#endif
 
       ImGui::End();
 
