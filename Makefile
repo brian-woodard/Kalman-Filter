@@ -10,8 +10,9 @@ all:
 #	g++ $(CXXFLAGS) -c imgui/backends/imgui_impl_opengl3.cpp -o imgui_impl_opengl3.o
 #	g++ $(CXXFLAGS) -c implot/implot.cpp -o implot.o
 #	g++ $(CXXFLAGS) -c implot/implot_items.cpp -o implot_items.o
-	g++ $(CXXFLAGS) -g kalman.cpp -o kalman -lglfw glad/glad.o imgui.o imgui_draw.o imgui_tables.o imgui_widgets.o imgui_impl_glfw.o imgui_impl_opengl3.o implot.o implot_items.o
-	g++ $(CXXFLAGS) -g main.cpp -o main -lglfw glad/glad.o imgui.o imgui_draw.o imgui_tables.o imgui_widgets.o imgui_impl_glfw.o imgui_impl_opengl3.o implot.o implot_items.o
+#	g++ $(CXXFLAGS) -g kalman.cpp -o kalman -lglfw glad/glad.o imgui.o imgui_draw.o imgui_tables.o imgui_widgets.o imgui_impl_glfw.o imgui_impl_opengl3.o implot.o implot_items.o
+#	g++ $(CXXFLAGS) -g main.cpp -o main -lglfw glad/glad.o imgui.o imgui_draw.o imgui_tables.o imgui_widgets.o imgui_impl_glfw.o imgui_impl_opengl3.o implot.o implot_items.o
+	g++ $(CXXFLAGS) -g tads_filter.cpp -o tads_filter -lglfw glad/glad.o imgui.o imgui_draw.o imgui_tables.o imgui_widgets.o imgui_impl_glfw.o imgui_impl_opengl3.o implot.o implot_items.o
 
 clean:
 	rm -f main
