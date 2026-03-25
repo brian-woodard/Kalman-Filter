@@ -18,8 +18,8 @@
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
 
-#define WIDTH  800
-#define HEIGHT 800
+#define WIDTH  900
+#define HEIGHT 1100
 
 // NOTE: Uncomment the following line for GL error handling
 //#define GL_DEBUG
@@ -145,12 +145,46 @@ int main(int argc, char* argv[])
       }
    }
 
-   std::vector<float> tads_yaw_rate_bias;
-   float yaw_rate_bias = 0.0;
+   float t = 0.02;
+   float kt = 0.60;
+   float k1 = 0.25;
+   float k1k2t = 0.000625;
+
+   std::vector<float> filtered_sight_az_v; // index 3
+   std::vector<float> filtered_sight_el_v; // index 4
+   std::vector<float> tads_yaw_rate_bias_v; // index 7
+   std::vector<float> tads_pitch_rate_bias_v; // index 8
+   std::vector<float> filtered_tads_yaw_rate_bias_v; // index 9
+   std::vector<float> filtered_tads_pitch_rate_bias_v; // index 10
+
+   float filtered_sight_az = data[3][0];
+   float filtered_sight_el = data[4][0];
+   float tads_yaw_rate_bias = data[7][0];
+   float tads_pitch_rate_bias = data[8][0];
+   float filtered_tads_yaw_rate_bias = 0.0f;
+   float filtered_tads_pitch_rate_bias = 0.0f;
+   float tads_yaw_rate = 0.0f;
+   float tads_pitch_rate = 0.0f;
+
    for (int i = 0; i < data[1].size(); i++)
    {
-      yaw_rate_bias = yaw_rate_bias + 0.000625 * (data[1][i] - data[3][i]);
-      tads_yaw_rate_bias.push_back(yaw_rate_bias);
+      tads_pitch_rate_bias = tads_pitch_rate_bias + k1k2t * (data[2][i] - filtered_sight_el);
+      tads_yaw_rate_bias   = tads_yaw_rate_bias + k1k2t * (data[1][i] - filtered_sight_az);
+
+      filtered_tads_pitch_rate_bias = tads_pitch_rate + tads_pitch_rate_bias;
+      filtered_tads_yaw_rate_bias   = tads_yaw_rate + tads_yaw_rate_bias;
+
+      filtered_sight_el = filtered_sight_el +
+                          t * (filtered_tads_pitch_rate_bias + k1 * (data[2][i] - filtered_sight_el));
+      filtered_sight_az = filtered_sight_az +
+                          t * (filtered_tads_yaw_rate_bias + k1 * (data[1][i] - filtered_sight_az));
+
+      tads_pitch_rate_bias_v.push_back(tads_pitch_rate_bias);
+      tads_yaw_rate_bias_v.push_back(tads_yaw_rate_bias);
+      filtered_tads_pitch_rate_bias_v.push_back(filtered_tads_pitch_rate_bias);
+      filtered_tads_yaw_rate_bias_v.push_back(filtered_tads_yaw_rate_bias);
+      filtered_sight_az_v.push_back(filtered_sight_az);
+      filtered_sight_el_v.push_back(filtered_sight_el);
    }
 
    std::vector<std::string> tse_titles;
@@ -195,6 +229,8 @@ int main(int argc, char* argv[])
       }
    }
 
+   bool execute_filter = false;
+   float leak = 1.0;
    while (window)
    {
       // Poll events
@@ -216,8 +252,69 @@ int main(int argc, char* argv[])
 
       ImGui::Begin("TADS Filter");
 
+      ImGui::InputFloat("kt", &kt, 1.0f, 1.0f, "%f");
+      ImGui::InputFloat("k1", &k1, 1.0f, 1.0f, "%f");
+      ImGui::InputFloat("k1k2t", &k1k2t, 1.0f, 1.0f, "%f");
+      ImGui::InputFloat("leak", &leak, 1.0f, 1.0f, "%f");
+
+      if (ImGui::Button("Execute"))
+      {
+         execute_filter = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Reset"))
+      {
+         kt = 0.60;
+         k1 = 0.25;
+         k1k2t = 0.000625;
+         leak = 1.0;
+      }
+
+      if (execute_filter)
+      {
+         float filtered_sight_az = data[3][0];
+         float filtered_sight_el = data[4][0];
+         float tads_yaw_rate_bias = data[7][0];
+         float tads_pitch_rate_bias = data[8][0];
+         float filtered_tads_yaw_rate_bias = 0.0f;
+         float filtered_tads_pitch_rate_bias = 0.0f;
+         float tads_yaw_rate = 0.0f;
+         float tads_pitch_rate = 0.0f;
+
+         execute_filter = false;
+
+         tads_pitch_rate_bias_v.clear();
+         tads_yaw_rate_bias_v.clear();
+         filtered_tads_pitch_rate_bias_v.clear();
+         filtered_tads_yaw_rate_bias_v.clear();
+         filtered_sight_az_v.clear();
+         filtered_sight_el_v.clear();
+
+         for (int i = 0; i < data[1].size(); i++)
+         {
+            tads_pitch_rate_bias = (tads_pitch_rate_bias * leak) + k1k2t * (data[2][i] - filtered_sight_el);
+            tads_yaw_rate_bias   = (tads_yaw_rate_bias * leak) + k1k2t * (data[1][i] - filtered_sight_az);
+
+            filtered_tads_pitch_rate_bias = tads_pitch_rate + tads_pitch_rate_bias;
+            filtered_tads_yaw_rate_bias   = tads_yaw_rate + tads_yaw_rate_bias;
+
+            filtered_sight_el = filtered_sight_el +
+                                t * (filtered_tads_pitch_rate_bias + k1 * (data[2][i] - filtered_sight_el));
+            filtered_sight_az = filtered_sight_az +
+                                t * (filtered_tads_yaw_rate_bias + k1 * (data[1][i] - filtered_sight_az));
+
+            tads_pitch_rate_bias_v.push_back(tads_pitch_rate_bias);
+            tads_yaw_rate_bias_v.push_back(tads_yaw_rate_bias);
+            filtered_tads_pitch_rate_bias_v.push_back(filtered_tads_pitch_rate_bias);
+            filtered_tads_yaw_rate_bias_v.push_back(filtered_tads_yaw_rate_bias);
+            filtered_sight_az_v.push_back(filtered_sight_az);
+            filtered_sight_el_v.push_back(filtered_sight_el);
+         }
+      }
+
       if (ImPlot::BeginPlot("TADS CSV File"))
       {
+         ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
          ImPlot::SetupAxes("x - Iteration", "y - Data");
 
          for (int i = 1; i < titles.size(); i++)
@@ -229,6 +326,7 @@ int main(int argc, char* argv[])
 
       if (ImPlot::BeginPlot("TSE CSV File"))
       {
+         ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
          ImPlot::SetupAxes("x - Iteration", "y - Data");
 
          for (int i = 1; i < tse_titles.size(); i++)
@@ -238,10 +336,18 @@ int main(int argc, char* argv[])
          ImPlot::EndPlot();
       }
 
-      if (ImPlot::BeginPlot("TAD Yaw Rate Bias"))
+      if (ImPlot::BeginPlot("TADS Filter"))
       {
+         ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
          ImPlot::SetupAxes("x - Iteration", "y - Data");
-         ImPlot::PlotLine("tads_yaw_rate_bias", data[0].data(), tads_yaw_rate_bias.data(), data[0].size());
+         ImPlot::PlotLine("tads_yaw_rate_bias", data[0].data(), tads_yaw_rate_bias_v.data(), data[0].size());
+         ImPlot::PlotLine("tads_pitch_rate_bias", data[0].data(), tads_pitch_rate_bias_v.data(), data[0].size());
+         ImPlot::PlotLine("filtered_tads_yaw_rate_bias", data[0].data(), filtered_tads_yaw_rate_bias_v.data(), data[0].size());
+         ImPlot::PlotLine("filtered_tads_pitch_rate_bias", data[0].data(), filtered_tads_pitch_rate_bias_v.data(), data[0].size());
+         ImPlot::PlotLine("filtered_sight_az", data[0].data(), filtered_sight_az_v.data(), data[0].size());
+         ImPlot::PlotLine("filtered_sight_el", data[0].data(), filtered_sight_el_v.data(), data[0].size());
+         ImPlot::PlotLine("current_sight_los.az", data[0].data(), data[1].data(), data[0].size());
+         ImPlot::PlotLine("current_sight_los.el", data[0].data(), data[2].data(), data[0].size());
          ImPlot::EndPlot();
       }
 
