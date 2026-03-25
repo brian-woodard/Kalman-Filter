@@ -1,3 +1,4 @@
 *.o
 main
 kalman
+tads_filter
