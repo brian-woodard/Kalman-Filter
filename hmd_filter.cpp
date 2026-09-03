@@ -18,7 +18,7 @@
 #include <implot.h>
 
 #define WIDTH  800
-#define HEIGHT 800
+#define HEIGHT 1200
 
 // NOTE: Uncomment the following line for GL error handling
 //#define GL_DEBUG
@@ -43,39 +43,6 @@
 #endif
 
 #define SAMPLES 6000
-
-float time_constant = 0.5;
-float lag_filter_c1 = exp(-0.016666 / time_constant);
-float lag_filter_c2 = 1.0 - lag_filter_c1;
-
-float heading = 0.0f;
-float heading_vel = 0.01f;
-float prev_heading = 0.0f;
-float heading_lag = 0.0f;
-float prev_heading_lag = 0.0f;
-float heading_kalman = 0.0f;
-float prev_heading_kalman = 0.0f;
-
-float xhat = 0.0;
-float xhatminus = 0.0;
-float P = 1.0;
-float Pminus = 0.0;
-float K = 0.0;
-float Q = 1e-5;
-float R = 0.01;
-
-float heading_plot[SAMPLES];
-float heading_delta_plot[SAMPLES];
-float heading_lag_plot[SAMPLES];
-float heading_lag_delta_plot[SAMPLES];
-float heading_kalman_plot[SAMPLES];
-float heading_kalman_delta_plot[SAMPLES];
-float plot_time[SAMPLES];
-float time_elapsed = 0.0f;
-
-bool enabled = true;
-
-int offset = 0;
 
 struct Orientation
 {
@@ -108,6 +75,7 @@ static double wrap180(double a)
 {
    while(a >  180.0) a -= 360.0;
    while(a < -180.0) a += 360.0;
+   return a;
 }
 
 //This assumes the calibration has occured
@@ -128,6 +96,126 @@ void az_el_to_ijk(double az, double el, double& i, double& j, double& k)
    i = cos(az) * cos(el);
    j = sin(az) * cos(el);
    k = -sin(el);
+}
+
+class Angle
+{
+public:
+
+   Angle(const char* Title, bool Enable, double Vel) : mTitle(Title), mEnabled(Enable), mAngleVel(Vel) {}
+
+   const char* mTitle;
+
+   double mAngle = 0.0;
+   double mPrevAngle = 0.0;
+   double mAngleVel = 0.0;
+
+   double mTimeConstant = 0.5;
+   double mLagFilterC1 = exp(-0.016666 / mTimeConstant);
+   double mLagFilterC2 = 1.0 - mLagFilterC1;
+   double mAngleLag = 0.0;
+   double mPrevAngleLag = 0.0;
+
+   double mXHat = 0.0;
+   double mXHatMinus = 0.0;
+   double mP = 1.0;
+   double mPMinus = 0.0;
+   double mK = 0.0;
+   double mQ = 1e-5;
+   double mR = 0.01;
+   double mAngleKalman = 0.0;
+   double mPrevAngleKalman = 0.0;
+
+   float mAnglePlot[SAMPLES] = {};
+   float mAngleDeltaPlot[SAMPLES] = {};
+   float mAngleLagPlot[SAMPLES] = {};
+   float mAngleLagDeltaPlot[SAMPLES] = {};
+   float mAngleKalmanPlot[SAMPLES] = {};
+   float mAngleKalmanDeltaPlot[SAMPLES] = {};
+   float mPlotTime[SAMPLES] = {};
+   float mTimeElapsed = 0.0;
+
+   int mOffset = 0;
+
+   bool mEnabled;
+   bool mAngleOverride = false;
+
+   void DrawAngle();
+
+};
+
+void Angle::DrawAngle()
+{
+   // Use random generator for velocity
+   // heading_vel = dist(engine);
+
+   // Update filters
+   if (mEnabled)
+   {
+      mTimeElapsed += 0.0166666;
+      mAngle = wrap180(mAngle + mAngleVel);
+
+      // Lag filter
+      mAngleLag = mLagFilterC1 * mAngleLag + mLagFilterC2 * mAngle;
+
+      // Kalman filter
+      // 1. Time update
+      mXHatMinus = mXHat;
+      mPMinus = mP + mQ;
+
+      // 2. Measurement update
+      mK = mPMinus / (mPMinus + mR);
+      mXHat = mXHatMinus + mK * (mAngleVel - mXHatMinus);
+      mP = (1.0f - mK) * mPMinus;
+
+      mAngleKalman += mXHat;
+   }
+
+   if (ImGui::CollapsingHeader(mTitle, ImGuiTreeNodeFlags_DefaultOpen))
+   {
+      std::string angle_title = mTitle + std::string("##angle");
+      std::string angle_checkbox_title = mTitle + std::string(" Override##angle_checkbox");
+      float angle = mAngle;
+
+      ImGui::Text("%s: %f (delta %f) - offset %d", mTitle, mAnglePlot[mOffset], mAngleDeltaPlot[mOffset], mOffset);
+
+      ImGui::Checkbox(angle_checkbox_title.c_str(), &mAngleOverride);
+      if (mAngleOverride)
+      {
+         ImGui::SliderFloat(angle_title.c_str(), &angle, -180.0f, 180.0f);
+         mAngle = angle;
+      }
+
+      std::string plot_title = mTitle + std::string("##Plot");
+      if (ImPlot::BeginPlot(plot_title.c_str()))
+      {
+         ImPlot::SetupAxes("x - Iteration", "y - Degrees");
+         ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 60.0, ImGuiCond_Once);
+         ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 20.0, ImGuiCond_Once);
+         ImPlot::PlotLine("Angle", mPlotTime, mAnglePlot, SAMPLES, ImPlotLineFlags_None, mOffset);
+         ImPlot::PlotLine("Delta", mPlotTime, mAngleDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
+         ImPlot::PlotLine("Angle Lag", mPlotTime, mAngleLagPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
+         ImPlot::PlotLine("Delta Lag", mPlotTime, mAngleLagDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
+         ImPlot::PlotLine("Angle Kalman", mPlotTime, mAngleKalmanPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
+         ImPlot::PlotLine("Delta Kalman", mPlotTime, mAngleKalmanDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
+         ImPlot::EndPlot();
+      }
+   }
+
+   mAnglePlot[mOffset] = mAngle;
+   mAngleDeltaPlot[mOffset] = mAngle - mPrevAngle;
+   mAngleLagPlot[mOffset] = mAngleLag;
+   mAngleLagDeltaPlot[mOffset] = mAngleLag - mPrevAngleLag;
+   mAngleKalmanPlot[mOffset] = mAngleKalman;
+   mAngleKalmanDeltaPlot[mOffset] = mAngleKalman - mPrevAngleKalman;
+   mPlotTime[mOffset] = mTimeElapsed;
+
+   if (mEnabled)
+      mOffset = (mOffset + 1) % SAMPLES;
+
+   mPrevAngle = mAngle;
+   mPrevAngleLag = mAngleLag;
+   mPrevAngleKalman = mAngleKalman;
 }
 
 int main(int argc, char* argv[])
@@ -187,17 +275,15 @@ int main(int argc, char* argv[])
    // set frame rate to 60 Hz
    using framerate = std::chrono::duration<double, std::ratio<1, 60>>;
    auto frame_time = std::chrono::high_resolution_clock::now() + framerate{1};
+   bool enabled = true;
 
-   for (size_t i = 0; i < SAMPLES; i++)
-   {
-      heading_plot[i] = 0.0f;
-      heading_delta_plot[i] = 0.0f;
-      plot_time[i] = 0.0f;
-   }
+   Angle yaw("Yaw", enabled, 0.0);
+   Angle pitch("Pitch", enabled, 0.0);
+   Angle roll("Roll", enabled, 0.0);
 
    std::random_device rd{};
    std::mt19937 engine{rd()};
-   std::normal_distribution<float> dist(heading_vel, 0.001f);
+   //std::normal_distribution<float> dist(heading_vel, 0.001f);
 
    while (window)
    {
@@ -218,66 +304,18 @@ int main(int argc, char* argv[])
       ImGui_ImplGlfw_NewFrame();
       ImGui::NewFrame();
 
-      ImGui::Begin("Heading Filter");
+      ImGui::Begin("HMD Filter");
 
-      ImGui::Checkbox("Enabled", &enabled);
-
-      // Use random generator for velocity
-      heading_vel = dist(engine);
-
-      if (enabled)
+      if (ImGui::Checkbox("Enabled", &enabled))
       {
-         time_elapsed += 0.0166666;
-         heading = heading + heading_vel;
-         if (heading > 360.0f)
-            heading -= 360.0f;
-
-         // Lag filter
-         heading_lag = lag_filter_c1 * heading_lag + lag_filter_c2 * heading;
-
-         // Kalman filter
-         // 1. Time update
-         xhatminus = xhat;
-         Pminus = P + Q;
-
-         // 2. Measurement update
-         K = Pminus / (Pminus + R);
-         xhat = xhatminus + K * (heading_vel - xhatminus);
-         P = (1.0f - K) * Pminus;
-
-         heading_kalman += xhat;
+         yaw.mEnabled = enabled;
+         pitch.mEnabled = enabled;
+         roll.mEnabled = enabled;
       }
 
-      heading_plot[offset] = heading;
-      heading_delta_plot[offset] = heading - prev_heading;
-      heading_lag_plot[offset] = heading_lag;
-      heading_lag_delta_plot[offset] = heading_lag - prev_heading_lag;
-      heading_kalman_plot[offset] = heading_kalman;
-      heading_kalman_delta_plot[offset] = heading_kalman - prev_heading_kalman;
-      plot_time[offset] = time_elapsed;
-
-      ImGui::Text("Heading: %f (delta %f) - offset %d", heading_plot[offset], heading_delta_plot[offset], offset);
-
-      if (enabled)
-         offset = (offset + 1) % SAMPLES;
-
-      prev_heading = heading;
-      prev_heading_lag = heading_lag;
-      prev_heading_kalman = heading_kalman;
-
-      if (ImPlot::BeginPlot("Heading"))
-      {
-         ImPlot::SetupAxes("x - Iteration", "y - Degrees");
-         ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 60.0, ImGuiCond_Once);
-         ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 20.0, ImGuiCond_Once);
-         ImPlot::PlotLine("Heading", plot_time, heading_plot, SAMPLES, ImPlotLineFlags_None, offset);
-         ImPlot::PlotLine("Delta", plot_time, heading_delta_plot, SAMPLES, ImPlotLineFlags_None, offset);
-         ImPlot::PlotLine("Heading Lag", plot_time, heading_lag_plot, SAMPLES, ImPlotLineFlags_None, offset);
-         ImPlot::PlotLine("Delta Lag", plot_time, heading_lag_delta_plot, SAMPLES, ImPlotLineFlags_None, offset);
-         ImPlot::PlotLine("Heading Kalman", plot_time, heading_kalman_plot, SAMPLES, ImPlotLineFlags_None, offset);
-         ImPlot::PlotLine("Delta Kalman", plot_time, heading_kalman_delta_plot, SAMPLES, ImPlotLineFlags_None, offset);
-         ImPlot::EndPlot();
-      }
+      yaw.DrawAngle();
+      pitch.DrawAngle();
+      roll.DrawAngle();
 
       ImGui::End();
 
