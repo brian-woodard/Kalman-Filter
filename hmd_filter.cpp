@@ -416,7 +416,7 @@ static void DrawHMDViewport(
    const char* title,
    const Orientation& hmd,
    ViewportCamera& camera,
-   const ImVec2& requestedSize = ImVec2(600, 450))
+   const ImVec2& requestedSize = ImVec2(600, 450), bool convert = false)
 {
    ImVec2 origin = ImGui::GetCursorScreenPos();
 
@@ -486,35 +486,6 @@ static void DrawHMDViewport(
       ImGui::GetColorU32(ImGuiCol_Border));
 
    //----------------------------------------------------------
-   // Headset model matrix
-   //----------------------------------------------------------
-
-   glm::mat4 model(1.0f);
-
-   //
-   // Coordinate system:
-   //
-   // +X = right
-   // +Y = up
-   // -Z = forward
-   //
-
-   model = glm::rotate(
-      model,
-      glm::radians((float)hmd.yaw),
-      glm::vec3(0, 1, 0));
-
-   model = glm::rotate(
-      model,
-      glm::radians((float)hmd.pitch),
-      glm::vec3(1, 0, 0));
-
-   model = glm::rotate(
-      model,
-      glm::radians((float)hmd.roll),
-      glm::vec3(0, 0, 1));
-
-   //----------------------------------------------------------
    // Orbit camera
    //----------------------------------------------------------
 
@@ -552,15 +523,7 @@ static void DrawHMDViewport(
          0.1f,
          100.0f);
 
-   //
-   // One MVP without the headset model for WORLD axes.
-   //
    glm::mat4 worldMVP = projection * view;
-
-   //
-   // One MVP including the headset orientation.
-   //
-   glm::mat4 hmdMVP = projection * view * model;
 
    //----------------------------------------------------------
    // World coordinate axes
@@ -668,6 +631,47 @@ static void DrawHMDViewport(
       "+Z",
       glm::vec3(0, 0, axisLength),
       zColor);
+
+   //----------------------------------------------------------
+   // Headset model matrix
+   //----------------------------------------------------------
+
+   glm::mat4 model(1.0f);
+
+   //
+   // Coordinate system:
+   //
+   // +X = right
+   // +Y = up
+   // -Z = forward
+   //
+
+   Orientation hmd_update = hmd;
+   if (convert)
+   {
+      hmd_update = calculateHMDAngles_new(hmd_update);
+      hmd_update.yaw = -hmd_update.yaw;
+   }
+
+   model = glm::rotate(
+      model,
+      glm::radians((float)hmd_update.yaw),
+      glm::vec3(0, 1, 0));
+
+   model = glm::rotate(
+      model,
+      glm::radians((float)hmd_update.pitch),
+      glm::vec3(1, 0, 0));
+
+   model = glm::rotate(
+      model,
+      glm::radians((float)hmd_update.roll),
+      glm::vec3(0, 0, 1));
+
+   //
+   // One MVP including the headset orientation.
+   //
+   glm::mat4 hmdMVP = projection * view * model;
 
    //----------------------------------------------------------
    // Headset geometry
@@ -787,15 +791,18 @@ static void DrawHMDViewport(
 
    ImU32 forwardColor = IM_COL32(255, 220, 50, 255);
 
-   DrawLine3D(
-      dl,
-      glm::vec3(0),
-      forward,
-      hmdMVP,
-      origin,
-      size,
-      forwardColor,
-      4.0f);
+   if (!convert)
+   {
+      DrawLine3D(
+         dl,
+         glm::vec3(0),
+         forward,
+         hmdMVP,
+         origin,
+         size,
+         forwardColor,
+         4.0f);
+   }
 
    ImVec2 forwardEnd =
       ProjectPoint(
@@ -809,6 +816,177 @@ static void DrawHMDViewport(
       5.0f,
       forwardColor);
 
+   if (convert)
+   {
+      double i, j, k;
+
+      double az_radians = glm::radians(hmd_update.yaw);
+      double el_radians = -glm::radians(hmd_update.pitch);
+      az_el_to_ijk(az_radians, el_radians, i, j, k);
+      glm::vec3 direction_vector(-j, k, -i);
+
+      ImU32 direction_color = IM_COL32(255, 0, 0, 255);
+
+      DrawLine3D(
+         dl,
+         glm::vec3(0),
+         direction_vector * 2.0f,
+         worldMVP,
+         origin,
+         size,
+         direction_color,
+         4.0f);
+
+      //----------------------------------------------------------
+      // Headset model matrix
+      //----------------------------------------------------------
+
+      glm::mat4 model(1.0f);
+
+      //
+      // Coordinate system:
+      //
+      // +X = right
+      // +Y = up
+      // -Z = forward
+      //
+
+      Orientation hmd_update_2 = hmd;
+      if (convert)
+      {
+         hmd_update_2 = calculateHMDAngles(hmd_update_2);
+         hmd_update_2.yaw = -hmd_update_2.yaw;
+      }
+
+      model = glm::rotate(
+         model,
+         glm::radians((float)hmd_update_2.yaw),
+         glm::vec3(0, 1, 0));
+
+      model = glm::rotate(
+         model,
+         glm::radians((float)hmd_update_2.pitch),
+         glm::vec3(1, 0, 0));
+
+      model = glm::rotate(
+         model,
+         glm::radians((float)hmd_update_2.roll),
+         glm::vec3(0, 0, 1));
+
+      //
+      // One MVP including the headset orientation.
+      //
+      glm::mat4 hmdMVP = projection * view * model;
+
+      //----------------------------------------------------------
+      // Headset geometry
+      //----------------------------------------------------------
+
+      const float x = 1.0f;
+      const float y = 0.45f;
+      const float z = 0.40f;
+
+      glm::vec3 vertices[8] =
+      {
+         {-x, -y, -z},
+         { x, -y, -z},
+         { x,  y, -z},
+         {-x,  y, -z},
+
+         {-x, -y,  z},
+         { x, -y,  z},
+         { x,  y,  z},
+         {-x,  y,  z}
+      };
+
+      static const int edges[][2] =
+      {
+         {0,1}, {1,2}, {2,3}, {3,0},
+         {4,5}, {5,6}, {6,7}, {7,4},
+         {0,4}, {1,5}, {2,6}, {3,7}
+      };
+
+      ImU32 hmdColor = ImGui::GetColorU32(ImGuiCol_Text);
+      ImU32 hmdYellowColor = IM_COL32(255, 255, 0, 255);
+
+      int count = 0;
+      for (const auto& edge : edges)
+      {
+         ImU32 color = hmdColor;
+         if (count < 4) color = hmdYellowColor;
+         DrawLine3D(
+            dl,
+            vertices[edge[0]],
+            vertices[edge[1]],
+            hmdMVP,
+            origin,
+            size,
+            color,
+            2.0f);
+         count++;
+      }
+
+      // Draw light yellow semi-transparent quad that represents the front of hmd
+      ImVec2 quad2D[4];
+
+      for (int i = 0; i < 4; ++i)
+      {
+         quad2D[i] = ProjectPoint(
+            vertices[edges[i][0]],
+            hmdMVP,
+            origin,
+            size);
+      }
+
+      // Light yellow, semi-transparent.
+      ImU32 quadFill = IM_COL32(255, 245, 150, 70);
+
+      dl->AddQuadFilled(
+         quad2D[0],
+         quad2D[1],
+         quad2D[2],
+         quad2D[3],
+         quadFill);
+
+      //----------------------------------------------------------
+      // Headset-local axes
+      //
+      // These rotate WITH the headset.
+      //----------------------------------------------------------
+
+      const float localAxis = 1.35f;
+
+      DrawLine3D(
+         dl,
+         glm::vec3(0),
+         glm::vec3(localAxis, 0, 0),
+         hmdMVP,
+         origin,
+         size,
+         xColor,
+         2.0f);
+
+      DrawLine3D(
+         dl,
+         glm::vec3(0),
+         glm::vec3(0, localAxis, 0),
+         hmdMVP,
+         origin,
+         size,
+         yColor,
+         2.0f);
+
+      DrawLine3D(
+         dl,
+         glm::vec3(0),
+         glm::vec3(0, 0, localAxis),
+         hmdMVP,
+         origin,
+         size,
+         zColor,
+         2.0f);
+   }
+
    //----------------------------------------------------------
    // Text overlay
    //----------------------------------------------------------
@@ -819,9 +997,9 @@ static void DrawHMDViewport(
       text,
       sizeof(text),
       "Yaw: %7.2f  Pitch: %7.2f  Roll: %7.2f",
-      hmd.yaw,
-      hmd.pitch,
-      hmd.roll);
+      hmd_update.yaw,
+      hmd_update.pitch,
+      hmd_update.roll);
 
    dl->AddText(
       ImVec2(
@@ -953,12 +1131,9 @@ int main(int argc, char* argv[])
          roll.mEnabled = enabled;
       }
 
-      if (ImGui::CollapsingHeader("Headset inputs from Vital"), ImGuiTreeNodeFlags_DefaultOpen)
-      {
-         yaw.DrawAngle(playback);
-         pitch.DrawAngle(playback);
-         roll.DrawAngle(playback);
-      }
+      yaw.DrawAngle(playback);
+      pitch.DrawAngle(playback);
+      roll.DrawAngle(playback);
 
       ImGui::End();
 
@@ -1072,6 +1247,7 @@ int main(int argc, char* argv[])
       };
 
       Orientation head = calculateHMDAngles_new(igRelative);
+      head.yaw = -head.yaw;
 
       //------------------------------------------------------
       // Information
@@ -1103,9 +1279,9 @@ int main(int argc, char* argv[])
 
       DrawHMDViewport(
          "Converted",
-         head,
+         igRelative,
          viewportCamera,
-         ImVec2(600, 450));
+         ImVec2(600, 450), true);
 
       ImGui::End();
 
