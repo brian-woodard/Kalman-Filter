@@ -8,6 +8,7 @@
 #include <fstream>
 #include <random>
 #include <iomanip>
+#include <algorithm>
 #include <filesystem>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -18,7 +19,7 @@
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
 
-#define WIDTH  800
+#define WIDTH  1600
 #define HEIGHT 1200
 
 // NOTE: Uncomment the following line for GL error handling
@@ -72,6 +73,23 @@ struct Orientation
    }
 };
 
+struct PlaybackState
+{
+   int  sample = 0;
+   bool playing = false;
+   bool loop = true;
+
+   double accumulator = 0.0;
+   std::chrono::steady_clock::time_point prevTime = std::chrono::steady_clock::now();
+};
+
+struct ViewportCamera
+{
+   float yaw      = 35.0f;
+   float pitch    = 20.0f;
+   float distance = 5.0f;
+};
+
 static double wrap180(double a)
 {
    while(a >  180.0) a -= 360.0;
@@ -90,6 +108,30 @@ static Orientation calculateHMDAngles(const Orientation& igRel)
    const double pitch_deg = -(cy * igRel.yaw + sy_neg * igRel.pitch);
 
    return Orientation{ wrap180(yaw_deg), wrap180(pitch_deg), 0.0 };
+}
+
+static Orientation calculateHMDAngles_new(const Orientation& igRel)
+{
+   // Head yaw appears to correspond to negative IG-relative roll.
+   const double yaw_deg = -igRel.roll;
+   const double y = glm::radians(yaw_deg);
+
+   const double c = std::cos(y);
+   const double s = std::sin(y);
+
+   // Rotate the remaining two axes into the head-relative frame.
+   const double pitch_deg = -(c * igRel.yaw - s * igRel.pitch);
+
+   // Orthogonal component of the same rotation.
+   // Sign may need to be reversed after visually checking the headset.
+   const double roll_deg = s * igRel.yaw + c * igRel.pitch;
+
+   return Orientation
+   {
+      wrap180(yaw_deg),
+      wrap180(pitch_deg),
+      wrap180(roll_deg)
+   };
 }
 
 void az_el_to_ijk(double az, double el, double& i, double& j, double& k)
@@ -144,11 +186,11 @@ public:
    bool mLoadedFromFile;
    bool mAngleOverride = false;
 
-   void DrawAngle();
+   void DrawAngle(const PlaybackState& Playback);
 
 };
 
-void Angle::DrawAngle()
+void Angle::DrawAngle(const PlaybackState& Playback)
 {
    // Use random generator for velocity
    // heading_vel = dist(engine);
@@ -197,14 +239,21 @@ void Angle::DrawAngle()
       if (ImPlot::BeginPlot(plot_title.c_str()))
       {
          ImPlot::SetupAxes("x - Iteration", "y - Degrees");
-         ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 60.0, ImGuiCond_Once);
-         ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 20.0, ImGuiCond_Once);
          ImPlot::PlotLine("Angle", mPlotTime, mAnglePlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Delta", mPlotTime, mAngleDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Angle Lag", mPlotTime, mAngleLagPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Delta Lag", mPlotTime, mAngleLagDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Angle Kalman", mPlotTime, mAngleKalmanPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Delta Kalman", mPlotTime, mAngleKalmanDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
+
+         if (Playback.playing)
+         {
+            float playback_time[1];
+            float playback_angle[1];
+            playback_time[0] = mPlotTime[Playback.sample];
+            playback_angle[0] = mAnglePlot[Playback.sample];
+            ImPlot::PlotScatter("Playback", playback_time, playback_angle, 1);
+         }
          ImPlot::EndPlot();
       }
    }
@@ -328,6 +377,476 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
    return result;
 }
 
+static ImVec2 ProjectPoint(
+   const glm::vec3& p,
+   const glm::mat4& mvp,
+   const ImVec2& origin,
+   const ImVec2& size)
+{
+   glm::vec4 clip = mvp * glm::vec4(p, 1.0f);
+
+   if (std::abs(clip.w) < 0.00001f)
+      return origin;
+
+   glm::vec3 ndc = glm::vec3(clip) / clip.w;
+
+   return ImVec2(
+      origin.x + (ndc.x * 0.5f + 0.5f) * size.x,
+      origin.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * size.y);
+}
+
+
+static void DrawLine3D(
+   ImDrawList* dl,
+   const glm::vec3& a,
+   const glm::vec3& b,
+   const glm::mat4& mvp,
+   const ImVec2& origin,
+   const ImVec2& size,
+   ImU32 color,
+   float thickness = 2.0f)
+{
+   ImVec2 p0 = ProjectPoint(a, mvp, origin, size);
+   ImVec2 p1 = ProjectPoint(b, mvp, origin, size);
+
+   dl->AddLine(p0, p1, color, thickness);
+}
+
+static void DrawHMDViewport(
+   const char* title,
+   const Orientation& hmd,
+   ViewportCamera& camera,
+   const ImVec2& requestedSize = ImVec2(600, 450))
+{
+   ImVec2 origin = ImGui::GetCursorScreenPos();
+
+   ImVec2 size = requestedSize;
+
+   float availWidth = ImGui::GetContentRegionAvail().x;
+   if (availWidth > 100.0f)
+      size.x = availWidth;
+
+   //----------------------------------------------------------
+   // Invisible viewport input surface
+   //----------------------------------------------------------
+
+   std::string button_title = "##HMD3DViewport" + std::string(title);
+   ImGui::InvisibleButton(
+      button_title.c_str(),
+      size,
+      ImGuiButtonFlags_MouseButtonLeft);
+
+   bool hovered = ImGui::IsItemHovered();
+
+   if (hovered)
+   {
+      ImGuiIO& io = ImGui::GetIO();
+
+      //
+      // Left mouse drag = orbit camera
+      //
+      if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+      {
+         camera.yaw   -= io.MouseDelta.x * 0.4f;
+         camera.pitch += io.MouseDelta.y * 0.4f;
+
+         camera.pitch = glm::clamp(camera.pitch, -89.0f, 89.0f);
+      }
+
+      //
+      // Mouse wheel = zoom
+      //
+      if (io.MouseWheel != 0.0f)
+      {
+         camera.distance -= io.MouseWheel * 0.4f;
+
+         camera.distance = glm::clamp(camera.distance, 2.0f, 15.0f);
+      }
+   }
+
+   ImDrawList* dl = ImGui::GetWindowDrawList();
+
+   ImVec2 bottomRight(
+      origin.x + size.x,
+      origin.y + size.y);
+
+   dl->PushClipRect(
+      origin,
+      bottomRight,
+      true);
+
+   dl->AddRectFilled(
+      origin,
+      bottomRight,
+      ImGui::GetColorU32(ImGuiCol_FrameBg));
+
+   dl->AddRect(
+      origin,
+      bottomRight,
+      ImGui::GetColorU32(ImGuiCol_Border));
+
+   //----------------------------------------------------------
+   // Headset model matrix
+   //----------------------------------------------------------
+
+   glm::mat4 model(1.0f);
+
+   //
+   // Coordinate system:
+   //
+   // +X = right
+   // +Y = up
+   // -Z = forward
+   //
+
+   model = glm::rotate(
+      model,
+      glm::radians((float)hmd.yaw),
+      glm::vec3(0, 1, 0));
+
+   model = glm::rotate(
+      model,
+      glm::radians((float)hmd.pitch),
+      glm::vec3(1, 0, 0));
+
+   model = glm::rotate(
+      model,
+      glm::radians((float)hmd.roll),
+      glm::vec3(0, 0, 1));
+
+   //----------------------------------------------------------
+   // Orbit camera
+   //----------------------------------------------------------
+
+   float cameraYaw = glm::radians(camera.yaw);
+
+   float cameraPitch = glm::radians(camera.pitch);
+
+   glm::vec3 cameraPos;
+
+   cameraPos.x =
+      camera.distance *
+      cos(cameraPitch) *
+      sin(cameraYaw);
+
+   cameraPos.y =
+      camera.distance *
+      sin(cameraPitch);
+
+   cameraPos.z =
+      camera.distance *
+      cos(cameraPitch) *
+      cos(cameraYaw);
+
+   glm::mat4 view = glm::lookAt(
+      cameraPos,
+      glm::vec3(0.0f),
+      glm::vec3(0, 1, 0));
+
+   float aspect = size.x / size.y;
+
+   glm::mat4 projection =
+      glm::perspective(
+         glm::radians(40.0f),
+         aspect,
+         0.1f,
+         100.0f);
+
+   //
+   // One MVP without the headset model for WORLD axes.
+   //
+   glm::mat4 worldMVP = projection * view;
+
+   //
+   // One MVP including the headset orientation.
+   //
+   glm::mat4 hmdMVP = projection * view * model;
+
+   //----------------------------------------------------------
+   // World coordinate axes
+   //----------------------------------------------------------
+
+   const float axisLength = 2.0f;
+
+   ImU32 xColor = IM_COL32(255, 80, 80, 255);
+   ImU32 yColor = IM_COL32(80, 255, 80, 255);
+   ImU32 zColor = IM_COL32(80, 140, 255, 255);
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(axisLength, 0, 0),
+      worldMVP,
+      origin,
+      size,
+      xColor,
+      3.0f);
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(0, axisLength, 0),
+      worldMVP,
+      origin,
+      size,
+      yColor,
+      3.0f);
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(0, 0, axisLength),
+      worldMVP,
+      origin,
+      size,
+      zColor,
+      3.0f);
+
+   //
+   // Negative axes -- dimmer
+   //
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(-axisLength, 0, 0),
+      worldMVP,
+      origin,
+      size,
+      IM_COL32(120, 50, 50, 255));
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(0, -axisLength, 0),
+      worldMVP,
+      origin,
+      size,
+      IM_COL32(50, 120, 50, 255));
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(0, 0, -axisLength),
+      worldMVP,
+      origin,
+      size,
+      IM_COL32(50, 70, 120, 255));
+
+   //----------------------------------------------------------
+   // Axis labels
+   //----------------------------------------------------------
+
+   auto drawAxisLabel =
+      [&](const char* text,
+         glm::vec3 position,
+         ImU32 color)
+   {
+      ImVec2 p =
+         ProjectPoint(
+               position,
+               worldMVP,
+               origin,
+               size);
+
+      dl->AddText(
+         ImVec2(p.x + 4, p.y + 4),
+         color,
+         text);
+   };
+
+   drawAxisLabel(
+      "+X",
+      glm::vec3(axisLength, 0, 0),
+      xColor);
+
+   drawAxisLabel(
+      "+Y",
+      glm::vec3(0, axisLength, 0),
+      yColor);
+
+   drawAxisLabel(
+      "+Z",
+      glm::vec3(0, 0, axisLength),
+      zColor);
+
+   //----------------------------------------------------------
+   // Headset geometry
+   //----------------------------------------------------------
+
+   const float x = 1.0f;
+   const float y = 0.45f;
+   const float z = 0.40f;
+
+   glm::vec3 vertices[8] =
+   {
+      {-x, -y, -z},
+      { x, -y, -z},
+      { x,  y, -z},
+      {-x,  y, -z},
+
+      {-x, -y,  z},
+      { x, -y,  z},
+      { x,  y,  z},
+      {-x,  y,  z}
+   };
+
+   static const int edges[][2] =
+   {
+      {0,1}, {1,2}, {2,3}, {3,0},
+      {4,5}, {5,6}, {6,7}, {7,4},
+      {0,4}, {1,5}, {2,6}, {3,7}
+   };
+
+   ImU32 hmdColor = ImGui::GetColorU32(ImGuiCol_Text);
+   ImU32 hmdYellowColor = IM_COL32(255, 255, 0, 255);
+
+   int count = 0;
+   for (const auto& edge : edges)
+   {
+      ImU32 color = hmdColor;
+      if (count < 4) color = hmdYellowColor;
+      DrawLine3D(
+         dl,
+         vertices[edge[0]],
+         vertices[edge[1]],
+         hmdMVP,
+         origin,
+         size,
+         color,
+         2.0f);
+      count++;
+   }
+
+   // Draw light yellow semi-transparent quad that represents the front of hmd
+   ImVec2 quad2D[4];
+
+   for (int i = 0; i < 4; ++i)
+   {
+      quad2D[i] = ProjectPoint(
+         vertices[edges[i][0]],
+         hmdMVP,
+         origin,
+         size);
+   }
+
+   // Light yellow, semi-transparent.
+   ImU32 quadFill = IM_COL32(255, 245, 150, 70);
+
+   dl->AddQuadFilled(
+      quad2D[0],
+      quad2D[1],
+      quad2D[2],
+      quad2D[3],
+      quadFill);
+
+   //----------------------------------------------------------
+   // Headset-local axes
+   //
+   // These rotate WITH the headset.
+   //----------------------------------------------------------
+
+   const float localAxis = 1.35f;
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(localAxis, 0, 0),
+      hmdMVP,
+      origin,
+      size,
+      xColor,
+      2.0f);
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(0, localAxis, 0),
+      hmdMVP,
+      origin,
+      size,
+      yColor,
+      2.0f);
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      glm::vec3(0, 0, localAxis),
+      hmdMVP,
+      origin,
+      size,
+      zColor,
+      2.0f);
+
+   //----------------------------------------------------------
+   // Headset forward vector
+   //
+   // Forward = local -Z
+   //----------------------------------------------------------
+
+   glm::vec3 forward(0, 0, -2.0f);
+
+   ImU32 forwardColor = IM_COL32(255, 220, 50, 255);
+
+   DrawLine3D(
+      dl,
+      glm::vec3(0),
+      forward,
+      hmdMVP,
+      origin,
+      size,
+      forwardColor,
+      4.0f);
+
+   ImVec2 forwardEnd =
+      ProjectPoint(
+         forward,
+         hmdMVP,
+         origin,
+         size);
+
+   dl->AddCircleFilled(
+      forwardEnd,
+      5.0f,
+      forwardColor);
+
+   //----------------------------------------------------------
+   // Text overlay
+   //----------------------------------------------------------
+
+   char text[256];
+
+   snprintf(
+      text,
+      sizeof(text),
+      "Yaw: %7.2f  Pitch: %7.2f  Roll: %7.2f",
+      hmd.yaw,
+      hmd.pitch,
+      hmd.roll);
+
+   dl->AddText(
+      ImVec2(
+         origin.x + 10,
+         origin.y + 10),
+      ImGui::GetColorU32(ImGuiCol_Text),
+      title);
+
+   dl->AddText(
+      ImVec2(
+         origin.x + 10,
+         origin.y + 30),
+      ImGui::GetColorU32(ImGuiCol_Text),
+      text);
+
+   dl->AddText(
+      ImVec2(
+         origin.x + 10,
+         origin.y + 50),
+      ImGui::GetColorU32(ImGuiCol_TextDisabled),
+      "Left drag: orbit camera   Mouse wheel: zoom");
+
+   dl->PopClipRect();
+}
+
 int main(int argc, char* argv[])
 {
    GLFWwindow* window = nullptr;
@@ -391,6 +910,9 @@ int main(int argc, char* argv[])
    Angle pitch("Pitch", enabled);
    Angle roll("Roll", enabled);
 
+   PlaybackState playback;
+   ViewportCamera viewportCamera;
+
    bool loaded_from_file = LoadFile(argc, argv, yaw, pitch, roll);
 
    std::random_device rd{};
@@ -431,12 +953,159 @@ int main(int argc, char* argv[])
          roll.mEnabled = enabled;
       }
 
-      if (ImGui::CollapsingHeader("Headset inputs from Vital"))
+      if (ImGui::CollapsingHeader("Headset inputs from Vital"), ImGuiTreeNodeFlags_DefaultOpen)
       {
-         yaw.DrawAngle();
-         pitch.DrawAngle();
-         roll.DrawAngle();
+         yaw.DrawAngle(playback);
+         pitch.DrawAngle(playback);
+         roll.DrawAngle(playback);
       }
+
+      ImGui::End();
+
+      ImGui::Begin("HMD Viewports");
+
+      int sampleCount = std::min({
+         yaw.mOffset,
+         pitch.mOffset,
+         roll.mOffset
+      });
+
+      //------------------------------------------------------
+      // Playback timing
+      //------------------------------------------------------
+
+      auto now = std::chrono::steady_clock::now();
+
+      double dt = std::chrono::duration<double>(now - playback.prevTime).count();
+
+      playback.prevTime = now;
+
+      if (playback.playing)
+      {
+         playback.accumulator += dt;
+
+         constexpr double samplePeriod = 1.0 / 60.0;
+
+         while (playback.accumulator >= samplePeriod)
+         {
+            playback.accumulator -= samplePeriod;
+
+            playback.sample++;
+
+            if (playback.sample >= sampleCount)
+            {
+               if (playback.loop)
+               {
+                  playback.sample = 0;
+               }
+               else
+               {
+                  playback.sample = sampleCount - 1;
+                  playback.playing = false;
+                  break;
+               }
+            }
+         }
+      }
+
+      //------------------------------------------------------
+      // Playback controls
+      //------------------------------------------------------
+
+      ImGui::SeparatorText("Recorded HMD Orientation");
+
+      if (!playback.playing)
+      {
+         if (ImGui::Button("Play"))
+         {
+            playback.playing = true;
+            playback.prevTime = std::chrono::steady_clock::now();
+         }
+      }
+      else
+      {
+         if (ImGui::Button("Pause"))
+         {
+            playback.playing = false;
+         }
+      }
+
+      ImGui::SameLine();
+
+      if (ImGui::Button("Restart"))
+      {
+         playback.sample = 0;
+         playback.accumulator = 0.0;
+      }
+
+      ImGui::SameLine();
+
+      ImGui::Checkbox("Loop", &playback.loop);
+
+      //------------------------------------------------------
+      // Sample slider
+      //------------------------------------------------------
+
+      int previousSample = playback.sample;
+
+      ImGui::SliderInt("Sample", &playback.sample, 0, sampleCount - 1);
+
+      //
+      // If manually scrubbing, reset playback timing so it
+      // doesn't immediately advance after releasing slider.
+      //
+      if (previousSample != playback.sample)
+      {
+         playback.accumulator = 0.0;
+         playback.prevTime = std::chrono::steady_clock::now();
+      }
+
+      //------------------------------------------------------
+      // Current raw sample
+      //------------------------------------------------------
+
+      Orientation igRelative
+      {
+         yaw.mAnglePlot[playback.sample],
+         pitch.mAnglePlot[playback.sample],
+         roll.mAnglePlot[playback.sample]
+      };
+
+      Orientation head = calculateHMDAngles_new(igRelative);
+
+      //------------------------------------------------------
+      // Information
+      //------------------------------------------------------
+
+      ImGui::Text("Sample: %d / %d", playback.sample, sampleCount - 1);
+
+      ImGui::SameLine();
+
+      ImGui::Text("Time: %.3f sec", yaw.mPlotTime[playback.sample]);
+
+      ImGui::Text(
+         "Raw   Yaw: %8.3f   Pitch: %8.3f   Roll: %8.3f",
+         igRelative.yaw,
+         igRelative.pitch,
+         igRelative.roll);
+
+      ImGui::Text(
+         "Head  Yaw: %8.3f   Pitch: %8.3f   Roll: %8.3f",
+         head.yaw,
+         head.pitch,
+         head.roll);
+
+      DrawHMDViewport(
+         "Raw",
+         igRelative,
+         viewportCamera,
+         ImVec2(600, 450));
+
+      DrawHMDViewport(
+         "Converted",
+         head,
+         viewportCamera,
+         ImVec2(600, 450));
 
       ImGui::End();
 
