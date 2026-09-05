@@ -8,6 +8,7 @@
 #include <fstream>
 #include <random>
 #include <iomanip>
+#include <filesystem>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -102,7 +103,8 @@ class Angle
 {
 public:
 
-   Angle(const char* Title, bool Enable, double Vel) : mTitle(Title), mEnabled(Enable), mAngleVel(Vel) {}
+   Angle(const char* Title, bool Enable, bool LoadedFromFile = false, double Vel = 0.0)
+      : mTitle(Title), mEnabled(Enable), mLoadedFromFile(LoadedFromFile), mAngleVel(Vel) {}
 
    const char* mTitle;
 
@@ -133,11 +135,13 @@ public:
    float mAngleKalmanPlot[SAMPLES] = {};
    float mAngleKalmanDeltaPlot[SAMPLES] = {};
    float mPlotTime[SAMPLES] = {};
+   int   mRequestId[SAMPLES] = {};
    float mTimeElapsed = 0.0;
 
    int mOffset = 0;
 
    bool mEnabled;
+   bool mLoadedFromFile;
    bool mAngleOverride = false;
 
    void DrawAngle();
@@ -179,11 +183,14 @@ void Angle::DrawAngle()
 
       ImGui::Text("%s: %f (delta %f) - offset %d", mTitle, mAnglePlot[mOffset], mAngleDeltaPlot[mOffset], mOffset);
 
-      ImGui::Checkbox(angle_checkbox_title.c_str(), &mAngleOverride);
-      if (mAngleOverride)
+      if (!mLoadedFromFile)
       {
-         ImGui::SliderFloat(angle_title.c_str(), &angle, -180.0f, 180.0f);
-         mAngle = angle;
+         ImGui::Checkbox(angle_checkbox_title.c_str(), &mAngleOverride);
+         if (mAngleOverride)
+         {
+            ImGui::SliderFloat(angle_title.c_str(), &angle, -180.0f, 180.0f);
+            mAngle = angle;
+         }
       }
 
       std::string plot_title = mTitle + std::string("##Plot");
@@ -202,20 +209,123 @@ void Angle::DrawAngle()
       }
    }
 
-   mAnglePlot[mOffset] = mAngle;
-   mAngleDeltaPlot[mOffset] = mAngle - mPrevAngle;
-   mAngleLagPlot[mOffset] = mAngleLag;
-   mAngleLagDeltaPlot[mOffset] = mAngleLag - mPrevAngleLag;
-   mAngleKalmanPlot[mOffset] = mAngleKalman;
-   mAngleKalmanDeltaPlot[mOffset] = mAngleKalman - mPrevAngleKalman;
-   mPlotTime[mOffset] = mTimeElapsed;
-
    if (mEnabled)
+   {
+      mAnglePlot[mOffset] = mAngle;
+      mAngleDeltaPlot[mOffset] = mAngle - mPrevAngle;
+      mAngleLagPlot[mOffset] = mAngleLag;
+      mAngleLagDeltaPlot[mOffset] = mAngleLag - mPrevAngleLag;
+      mAngleKalmanPlot[mOffset] = mAngleKalman;
+      mAngleKalmanDeltaPlot[mOffset] = mAngleKalman - mPrevAngleKalman;
+      mPlotTime[mOffset] = mTimeElapsed;
+
       mOffset = (mOffset + 1) % SAMPLES;
 
-   mPrevAngle = mAngle;
-   mPrevAngleLag = mAngleLag;
-   mPrevAngleKalman = mAngleKalman;
+      mPrevAngle = mAngle;
+      mPrevAngleLag = mAngleLag;
+      mPrevAngleKalman = mAngleKalman;
+   }
+}
+
+bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
+{
+   bool result = false;
+
+   if (argc > 1)
+   {
+      std::filesystem::path file_path = argv[1];
+
+      if (file_path.extension() == ".csv")
+      {
+         std::ifstream file(file_path.c_str());
+
+         if (file.is_open())
+         {
+            char   line[256];
+            int    linecount = 0;
+            double time_start;
+
+            result = true;
+
+            // Skip first line
+            file.getline(line, sizeof(line));
+
+            while (!file.eof())
+            {
+               file.getline(line, sizeof(line));
+               linecount++;
+
+               std::string item;
+               std::stringstream ss(line);
+               int    idx = 0;
+               bool   send = false;
+               double time;
+               int    request_id;
+               float  roll_in;
+               float  pitch_in;
+               float  yaw_in;
+
+               while (std::getline(ss, item, ','))
+               {
+                  switch (idx)
+                  {
+                     case 2:
+                        send = (item == "true");
+                        break;
+                     case 3:
+                        time = std::strtod(item.c_str(), nullptr);
+                        if (linecount == 1)
+                           time_start = time;
+                        break;
+                     case 5:
+                        request_id = std::strtol(item.c_str(), nullptr, 10);
+                        break;
+                     case 9:
+                        roll_in = std::strtof(item.c_str(), nullptr);
+                        break;
+                     case 10:
+                        pitch_in = std::strtof(item.c_str(), nullptr);
+                        break;
+                     case 11:
+                        yaw_in = std::strtof(item.c_str(), nullptr);
+                        break;
+                     default:
+                        break;
+                  }
+
+                  idx++;
+               }
+
+               if (!send && yaw.mOffset < SAMPLES)
+               {
+                  yaw.mPlotTime[yaw.mOffset] = (float)(time - time_start);
+                  yaw.mAnglePlot[yaw.mOffset] = yaw_in;
+                  yaw.mRequestId[yaw.mOffset] = request_id;
+                  yaw.mOffset++;
+
+                  pitch.mPlotTime[pitch.mOffset] = (float)(time - time_start);
+                  pitch.mAnglePlot[pitch.mOffset] = pitch_in;
+                  pitch.mRequestId[pitch.mOffset] = request_id;
+                  pitch.mOffset++;
+
+                  roll.mPlotTime[roll.mOffset] = (float)(time - time_start);
+                  roll.mAnglePlot[roll.mOffset] = roll_in;
+                  roll.mRequestId[roll.mOffset] = request_id;
+                  roll.mOffset++;
+               }
+            }
+
+            printf("Read %d lines from %s\n", linecount, file_path.string().c_str());
+         }
+      }
+      else if (file_path.extension() == ".bin")
+      {
+         result = true;
+         printf(">>> bin file\n");
+      }
+   }
+
+   return result;
 }
 
 int main(int argc, char* argv[])
@@ -277,9 +387,11 @@ int main(int argc, char* argv[])
    auto frame_time = std::chrono::high_resolution_clock::now() + framerate{1};
    bool enabled = true;
 
-   Angle yaw("Yaw", enabled, 0.0);
-   Angle pitch("Pitch", enabled, 0.0);
-   Angle roll("Roll", enabled, 0.0);
+   Angle yaw("Yaw", enabled);
+   Angle pitch("Pitch", enabled);
+   Angle roll("Roll", enabled);
+
+   bool loaded_from_file = LoadFile(argc, argv, yaw, pitch, roll);
 
    std::random_device rd{};
    std::mt19937 engine{rd()};
@@ -306,16 +418,25 @@ int main(int argc, char* argv[])
 
       ImGui::Begin("HMD Filter");
 
-      if (ImGui::Checkbox("Enabled", &enabled))
+      if (loaded_from_file)
+      {
+         yaw.mEnabled = false;
+         pitch.mEnabled = false;
+         roll.mEnabled = false;
+      }
+      else if (ImGui::Checkbox("Enabled", &enabled))
       {
          yaw.mEnabled = enabled;
          pitch.mEnabled = enabled;
          roll.mEnabled = enabled;
       }
 
-      yaw.DrawAngle();
-      pitch.DrawAngle();
-      roll.DrawAngle();
+      if (ImGui::CollapsingHeader("Headset inputs from Vital"))
+      {
+         yaw.DrawAngle();
+         pitch.DrawAngle();
+         roll.DrawAngle();
+      }
 
       ImGui::End();
 
