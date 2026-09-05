@@ -321,7 +321,7 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
       else if (file_path.extension() == ".bin")
       {
          result = true;
-         printf(">>> bin file\n");
+         printf("Error - binary file reading not implemented yet!\n");
       }
    }
 
