@@ -102,6 +102,34 @@ struct ViewportCamera
    float distance = 5.0f;
 };
 
+struct BinaryData
+{
+   uint64_t frame;
+   double   time;
+   int32_t  words[14];
+};
+
+union LfUnion
+{
+   long  l;
+   float f;
+};
+
+float doBSCALE(int width, int scale)
+{
+   LfUnion lf;
+
+   lf.l = (127 + (width) - (scale)) << 23;
+
+   return lf.f;
+}
+
+double HALF_CIRCLE_DEGREES = 180.0;
+double revsToDegs32(int32_t value)
+{
+   return static_cast<double>(value * HALF_CIRCLE_DEGREES / doBSCALE(31, 0));
+}
+
 static double wrap180(double a)
 {
    while(a >  180.0) a -= 360.0;
@@ -399,7 +427,46 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
       else if (file_path.extension() == ".bin")
       {
          result = true;
-         printf("Error - binary file reading not implemented yet!\n");
+         std::ifstream file(file_path.c_str(), std::ios::binary);
+
+         if (file.is_open())
+         {
+            int recordcount = 0;
+
+            result = true;
+
+            BinaryData record;
+            file.read((char*)&record, sizeof(record));
+            double time_start = record.time;
+            while (!file.eof())
+            {
+               recordcount++;
+
+               double time = record.time;
+               float  roll_in = revsToDegs32(record.words[5]);
+               float  pitch_in = revsToDegs32(record.words[6]);
+               float  yaw_in = revsToDegs32(record.words[7]);
+
+               if (yaw.mOffset < SAMPLES)
+               {
+                  yaw.mPlotTime[yaw.mOffset] = (float)(time - time_start);
+                  yaw.mAnglePlot[yaw.mOffset] = yaw_in;
+                  yaw.mOffset++;
+
+                  pitch.mPlotTime[pitch.mOffset] = (float)(time - time_start);
+                  pitch.mAnglePlot[pitch.mOffset] = pitch_in;
+                  pitch.mOffset++;
+
+                  roll.mPlotTime[roll.mOffset] = (float)(time - time_start);
+                  roll.mAnglePlot[roll.mOffset] = roll_in;
+                  roll.mOffset++;
+               }
+
+               file.read((char*)&record, sizeof(record));
+            }
+
+            printf("Read %d records from %s\n", recordcount, file_path.string().c_str());
+         }
       }
    }
 
