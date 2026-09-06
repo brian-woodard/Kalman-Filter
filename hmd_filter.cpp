@@ -46,6 +46,18 @@
 
 #define SAMPLES 6000
 
+float calc_az[SAMPLES];
+float calc_el[SAMPLES];
+float calc_az_new[SAMPLES];
+float calc_el_new[SAMPLES];
+float calc_i[SAMPLES];
+float calc_j[SAMPLES];
+float calc_k[SAMPLES];
+float file_az[SAMPLES];
+float file_el[SAMPLES];
+float file_time[SAMPLES];
+int offset = 0;
+
 struct Orientation
 {
    double yaw;
@@ -177,7 +189,8 @@ public:
    float mAngleKalmanPlot[SAMPLES] = {};
    float mAngleKalmanDeltaPlot[SAMPLES] = {};
    float mPlotTime[SAMPLES] = {};
-   int   mRequestId[SAMPLES] = {};
+   float mRequestId[SAMPLES] = {};
+   float mRequestIdDelta[SAMPLES] = {};
    float mTimeElapsed = 0.0;
 
    int mOffset = 0;
@@ -245,6 +258,7 @@ void Angle::DrawAngle(const PlaybackState& Playback)
          ImPlot::PlotLine("Delta Lag", mPlotTime, mAngleLagDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Angle Kalman", mPlotTime, mAngleKalmanPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Delta Kalman", mPlotTime, mAngleKalmanDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
+         //ImPlot::PlotLine("Request Id", mPlotTime, mRequestIdDelta, SAMPLES, ImPlotLineFlags_None, mOffset);
 
          if (Playback.playing)
          {
@@ -310,6 +324,7 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
                bool   send = false;
                double time;
                int    request_id;
+               int    prev_request_id;
                float  roll_in;
                float  pitch_in;
                float  yaw_in;
@@ -327,7 +342,11 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
                            time_start = time;
                         break;
                      case 5:
+                        if (linecount > 1)
+                           prev_request_id = request_id;
                         request_id = std::strtol(item.c_str(), nullptr, 10);
+                        if (linecount == 1)
+                           prev_request_id = request_id;
                         break;
                      case 9:
                         roll_in = std::strtof(item.c_str(), nullptr);
@@ -350,17 +369,27 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
                   yaw.mPlotTime[yaw.mOffset] = (float)(time - time_start);
                   yaw.mAnglePlot[yaw.mOffset] = yaw_in;
                   yaw.mRequestId[yaw.mOffset] = request_id;
+                  yaw.mRequestIdDelta[yaw.mOffset] = request_id - prev_request_id;
                   yaw.mOffset++;
 
                   pitch.mPlotTime[pitch.mOffset] = (float)(time - time_start);
                   pitch.mAnglePlot[pitch.mOffset] = pitch_in;
                   pitch.mRequestId[pitch.mOffset] = request_id;
+                  pitch.mRequestIdDelta[pitch.mOffset] = request_id - prev_request_id;
                   pitch.mOffset++;
 
                   roll.mPlotTime[roll.mOffset] = (float)(time - time_start);
                   roll.mAnglePlot[roll.mOffset] = roll_in;
                   roll.mRequestId[roll.mOffset] = request_id;
+                  roll.mRequestIdDelta[roll.mOffset] = request_id - prev_request_id;
                   roll.mOffset++;
+               }
+               else if (send && offset < SAMPLES)
+               {
+                  file_az[offset] = yaw_in;
+                  file_el[offset] = pitch_in;
+                  file_time[offset] = (float)(time - time_start);
+                  offset++;
                }
             }
 
@@ -372,6 +401,25 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
          result = true;
          printf("Error - binary file reading not implemented yet!\n");
       }
+   }
+
+   for (int i = 0; i < yaw.mOffset; i++)
+   {
+      Orientation ig_angles = Orientation(yaw.mAnglePlot[i], pitch.mAnglePlot[i], roll.mAnglePlot[i]);
+      Orientation avcsim_angles = calculateHMDAngles(ig_angles);
+      calc_az[i] = avcsim_angles.yaw;
+      calc_el[i] = avcsim_angles.pitch;
+      avcsim_angles = calculateHMDAngles_new(ig_angles);
+      calc_az_new[i] = avcsim_angles.yaw;
+      calc_el_new[i] = avcsim_angles.pitch;
+
+      double ii, j, k;
+      double az_radians = glm::radians(avcsim_angles.yaw);
+      double el_radians = -glm::radians(avcsim_angles.pitch);
+      az_el_to_ijk(az_radians, el_radians, ii, j, k);
+      calc_i[i] = -j;
+      calc_j[i] = k;
+      calc_k[i] = -ii;
    }
 
    return result;
@@ -1134,6 +1182,55 @@ int main(int argc, char* argv[])
       yaw.DrawAngle(playback);
       pitch.DrawAngle(playback);
       roll.DrawAngle(playback);
+
+      if (offset > 0)
+      {
+         if (ImPlot::BeginPlot("AVCSIM Angles##Plot"))
+         {
+            ImPlot::SetupAxes("x - Iteration", "y - Degrees");
+            ImPlot::PlotLine("Az", file_time, file_az, SAMPLES, ImPlotLineFlags_None, offset);
+            ImPlot::PlotLine("El", file_time, file_el, SAMPLES, ImPlotLineFlags_None, offset);
+
+            ImPlot::EndPlot();
+         }
+      }
+
+      if (ImPlot::BeginPlot("AVCSIM Angles Calculated##Plot"))
+      {
+         ImPlot::SetupAxes("x - Iteration", "y - Degrees");
+         ImPlot::PlotLine("Calculated Az", yaw.mPlotTime, calc_az, SAMPLES, ImPlotLineFlags_None, yaw.mOffset);
+         ImPlot::PlotLine("Calculated El", yaw.mPlotTime, calc_el, SAMPLES, ImPlotLineFlags_None, yaw.mOffset);
+         ImPlot::PlotLine("Calculated Az New", yaw.mPlotTime, calc_az, SAMPLES, ImPlotLineFlags_None, yaw.mOffset);
+         ImPlot::PlotLine("Calculated El New", yaw.mPlotTime, calc_el, SAMPLES, ImPlotLineFlags_None, yaw.mOffset);
+
+         if (playback.playing)
+         {
+            float playback_time[1];
+            float playback_angle[1];
+            playback_time[0] = yaw.mPlotTime[playback.sample];
+            playback_angle[0] = calc_az[playback.sample];
+            ImPlot::PlotScatter("Playback", playback_time, playback_angle, 1);
+         }
+         ImPlot::EndPlot();
+      }
+
+      if (ImPlot::BeginPlot("AVCSIM Direction Vector Calculated##Plot"))
+      {
+         ImPlot::SetupAxes("x - Iteration", "y - Degrees");
+         ImPlot::PlotLine("Calculated i", yaw.mPlotTime, calc_i, SAMPLES, ImPlotLineFlags_None, yaw.mOffset);
+         ImPlot::PlotLine("Calculated j", yaw.mPlotTime, calc_j, SAMPLES, ImPlotLineFlags_None, yaw.mOffset);
+         ImPlot::PlotLine("Calculated k", yaw.mPlotTime, calc_k, SAMPLES, ImPlotLineFlags_None, yaw.mOffset);
+
+         if (playback.playing)
+         {
+            float playback_time[1];
+            float playback_angle[1];
+            playback_time[0] = yaw.mPlotTime[playback.sample];
+            playback_angle[0] = calc_i[playback.sample];
+            ImPlot::PlotScatter("Playback", playback_time, playback_angle, 1);
+         }
+         ImPlot::EndPlot();
+      }
 
       ImGui::End();
 

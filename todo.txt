@@ -1,2 +1,2 @@
 - Read in HMD binary, convert int to float, how does that compare to csv. Should be identical
-- Plot direction vector (i, j, k), check for any spikes or things that might be filtered
+- Plot Request ID, check avcsim, does counter matter?
