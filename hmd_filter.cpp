@@ -55,7 +55,10 @@ float calc_j[SAMPLES];
 float calc_k[SAMPLES];
 float file_az[SAMPLES];
 float file_el[SAMPLES];
+float file_az_delta[SAMPLES];
+float file_el_delta[SAMPLES];
 float file_time[SAMPLES];
+float file_time_delta[SAMPLES];
 int offset = 0;
 
 struct Orientation
@@ -217,6 +220,7 @@ public:
    float mAngleKalmanPlot[SAMPLES] = {};
    float mAngleKalmanDeltaPlot[SAMPLES] = {};
    float mPlotTime[SAMPLES] = {};
+   float mPlotTimeDelta[SAMPLES] = {};
    float mRequestId[SAMPLES] = {};
    float mRequestIdDelta[SAMPLES] = {};
    float mTimeElapsed = 0.0;
@@ -286,7 +290,8 @@ void Angle::DrawAngle(const PlaybackState& Playback)
          ImPlot::PlotLine("Delta Lag", mPlotTime, mAngleLagDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Angle Kalman", mPlotTime, mAngleKalmanPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
          ImPlot::PlotLine("Delta Kalman", mPlotTime, mAngleKalmanDeltaPlot, SAMPLES, ImPlotLineFlags_None, mOffset);
-         //ImPlot::PlotLine("Request Id", mPlotTime, mRequestIdDelta, SAMPLES, ImPlotLineFlags_None, mOffset);
+         ImPlot::PlotLine("Request Id", mPlotTime, mRequestIdDelta, SAMPLES, ImPlotLineFlags_None, mOffset);
+         ImPlot::PlotLine("Time Delta", mPlotTime, mPlotTimeDelta, SAMPLES, ImPlotLineFlags_None, mOffset);
 
          if (Playback.playing)
          {
@@ -398,18 +403,33 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
                   yaw.mAnglePlot[yaw.mOffset] = yaw_in;
                   yaw.mRequestId[yaw.mOffset] = request_id;
                   yaw.mRequestIdDelta[yaw.mOffset] = request_id - prev_request_id;
+
+                  if (yaw.mOffset == 0)
+                     yaw.mPlotTimeDelta[yaw.mOffset] = 0.0f;
+                  else
+                     yaw.mPlotTimeDelta[yaw.mOffset] = yaw.mPlotTime[yaw.mOffset] - yaw.mPlotTime[yaw.mOffset - 1];
                   yaw.mOffset++;
 
                   pitch.mPlotTime[pitch.mOffset] = (float)(time - time_start);
                   pitch.mAnglePlot[pitch.mOffset] = pitch_in;
                   pitch.mRequestId[pitch.mOffset] = request_id;
                   pitch.mRequestIdDelta[pitch.mOffset] = request_id - prev_request_id;
+
+                  if (pitch.mOffset == 0)
+                     pitch.mPlotTimeDelta[pitch.mOffset] = 0.0f;
+                  else
+                     pitch.mPlotTimeDelta[pitch.mOffset] = pitch.mPlotTime[pitch.mOffset] - pitch.mPlotTime[pitch.mOffset - 1];
                   pitch.mOffset++;
 
                   roll.mPlotTime[roll.mOffset] = (float)(time - time_start);
                   roll.mAnglePlot[roll.mOffset] = roll_in;
                   roll.mRequestId[roll.mOffset] = request_id;
                   roll.mRequestIdDelta[roll.mOffset] = request_id - prev_request_id;
+
+                  if (roll.mOffset == 0)
+                     roll.mPlotTimeDelta[roll.mOffset] = 0.0f;
+                  else
+                     roll.mPlotTimeDelta[roll.mOffset] = roll.mPlotTime[roll.mOffset] - roll.mPlotTime[roll.mOffset - 1];
                   roll.mOffset++;
                }
                else if (send && offset < SAMPLES)
@@ -417,6 +437,19 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
                   file_az[offset] = yaw_in;
                   file_el[offset] = pitch_in;
                   file_time[offset] = (float)(time - time_start);
+
+                  if (offset == 0)
+                  {
+                     file_az_delta[offset] = 0.0f;
+                     file_el_delta[offset] = 0.0f;
+                     file_time_delta[offset] = 0.0f;
+                  }
+                  else
+                  {
+                     file_az_delta[offset] = file_az[offset] - file_az[offset - 1];
+                     file_el_delta[offset] = file_el[offset] - file_el[offset - 1];
+                     file_time_delta[offset] = file_time[offset] - file_time[offset - 1];
+                  }
                   offset++;
                }
             }
@@ -1257,6 +1290,9 @@ int main(int argc, char* argv[])
             ImPlot::SetupAxes("x - Iteration", "y - Degrees");
             ImPlot::PlotLine("Az", file_time, file_az, SAMPLES, ImPlotLineFlags_None, offset);
             ImPlot::PlotLine("El", file_time, file_el, SAMPLES, ImPlotLineFlags_None, offset);
+            ImPlot::PlotLine("Az Delta", file_time, file_az_delta, SAMPLES, ImPlotLineFlags_None, offset);
+            ImPlot::PlotLine("El Delta", file_time, file_el_delta, SAMPLES, ImPlotLineFlags_None, offset);
+            ImPlot::PlotLine("Time Delta", file_time, file_time_delta, SAMPLES, ImPlotLineFlags_None, offset);
 
             ImPlot::EndPlot();
          }
