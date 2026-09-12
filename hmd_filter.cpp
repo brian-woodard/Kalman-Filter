@@ -55,10 +55,19 @@ float calc_j[SAMPLES];
 float calc_k[SAMPLES];
 float file_az[SAMPLES];
 float file_el[SAMPLES];
+float file_az_filtered[SAMPLES];
+float file_el_filtered[SAMPLES];
 float file_az_delta[SAMPLES];
 float file_el_delta[SAMPLES];
+float file_az_delta_filtered[SAMPLES];
+float file_el_delta_filtered[SAMPLES];
 float file_time[SAMPLES];
 float file_time_delta[SAMPLES];
+bool enable_avcsim_filter = false;
+bool angle_check = false;
+double time_constant = 0.5;
+double lag_filter_c1 = exp(-0.016666 / time_constant);
+double lag_filter_c2 = 1.0 - lag_filter_c1;
 int offset = 0;
 
 struct Orientation
@@ -405,9 +414,15 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
                   yaw.mRequestIdDelta[yaw.mOffset] = request_id - prev_request_id;
 
                   if (yaw.mOffset == 0)
+                  {
                      yaw.mPlotTimeDelta[yaw.mOffset] = 0.0f;
+                     yaw.mAngleDeltaPlot[yaw.mOffset] = 0.0f;
+                  }
                   else
+                  {
                      yaw.mPlotTimeDelta[yaw.mOffset] = yaw.mPlotTime[yaw.mOffset] - yaw.mPlotTime[yaw.mOffset - 1];
+                     yaw.mAngleDeltaPlot[yaw.mOffset] = yaw.mAnglePlot[yaw.mOffset] - yaw.mAnglePlot[yaw.mOffset - 1];
+                  }
                   yaw.mOffset++;
 
                   pitch.mPlotTime[pitch.mOffset] = (float)(time - time_start);
@@ -416,9 +431,15 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
                   pitch.mRequestIdDelta[pitch.mOffset] = request_id - prev_request_id;
 
                   if (pitch.mOffset == 0)
+                  {
                      pitch.mPlotTimeDelta[pitch.mOffset] = 0.0f;
+                     pitch.mAngleDeltaPlot[pitch.mOffset] = 0.0f;
+                  }
                   else
+                  {
                      pitch.mPlotTimeDelta[pitch.mOffset] = pitch.mPlotTime[pitch.mOffset] - pitch.mPlotTime[pitch.mOffset - 1];
+                     pitch.mAngleDeltaPlot[pitch.mOffset] = pitch.mAnglePlot[pitch.mOffset] - pitch.mAnglePlot[pitch.mOffset - 1];
+                  }
                   pitch.mOffset++;
 
                   roll.mPlotTime[roll.mOffset] = (float)(time - time_start);
@@ -427,9 +448,15 @@ bool LoadFile(int argc, char* argv[], Angle& yaw, Angle& pitch, Angle& roll)
                   roll.mRequestIdDelta[roll.mOffset] = request_id - prev_request_id;
 
                   if (roll.mOffset == 0)
+                  {
                      roll.mPlotTimeDelta[roll.mOffset] = 0.0f;
+                     roll.mAngleDeltaPlot[roll.mOffset] = 0.0f;
+                  }
                   else
+                  {
                      roll.mPlotTimeDelta[roll.mOffset] = roll.mPlotTime[roll.mOffset] - roll.mPlotTime[roll.mOffset - 1];
+                     roll.mAngleDeltaPlot[roll.mOffset] = roll.mAnglePlot[roll.mOffset] - roll.mAnglePlot[roll.mOffset - 1];
+                  }
                   roll.mOffset++;
                }
                else if (send && offset < SAMPLES)
@@ -1173,6 +1200,51 @@ static void DrawHMDViewport(
    dl->PopClipRect();
 }
 
+void FilterAvcsimAngles()
+{
+   if (offset > 0 && offset < SAMPLES)
+   {
+      lag_filter_c1 = exp(-0.016666 / time_constant);
+      lag_filter_c2 = 1.0 - lag_filter_c1;
+
+      double az_filtered;
+      double el_filtered;
+
+      for (int i = 0; i < offset; i++)
+      {
+         if (i == 0)
+         {
+            az_filtered = file_az[i];
+            el_filtered = file_el[i];
+            file_az_delta_filtered[i] = 0.0f;
+            file_el_delta_filtered[i] = 0.0f;
+         }
+
+         if (angle_check)
+         {
+            // Calculate shortest angular distance (-PI to PI)
+            double delta = fmod(file_az[i] - az_filtered + 180.0, 360.0) - 180.0;
+            az_filtered = fmod((az_filtered + lag_filter_c2 * delta), 360.0);
+            el_filtered = lag_filter_c1 * el_filtered + lag_filter_c2 * file_el[i];
+         }
+         else
+         {
+            az_filtered = lag_filter_c1 * az_filtered + lag_filter_c2 * file_az[i];
+            el_filtered = lag_filter_c1 * el_filtered + lag_filter_c2 * file_el[i];
+         }
+
+         file_az_filtered[i] = az_filtered;
+         file_el_filtered[i] = el_filtered;
+
+         if (i > 0)
+         {
+            file_az_delta_filtered[i] = file_az_filtered[i] - file_az_filtered[i - 1];
+            file_el_delta_filtered[i] = file_el_filtered[i] - file_el_filtered[i - 1];
+         }
+      }
+   }
+}
+
 int main(int argc, char* argv[])
 {
    GLFWwindow* window = nullptr;
@@ -1245,6 +1317,10 @@ int main(int argc, char* argv[])
    std::mt19937 engine{rd()};
    //std::normal_distribution<float> dist(heading_vel, 0.001f);
 
+   FilterAvcsimAngles();
+
+   printf("Loaded from file %d, samples %d (%d)\n", loaded_from_file, yaw.mOffset, offset);
+
    while (window)
    {
       // Poll events
@@ -1285,6 +1361,20 @@ int main(int argc, char* argv[])
 
       if (offset > 0)
       {
+         ImGui::Checkbox("AVCSIM Filter", &enable_avcsim_filter);
+         ImGui::SameLine();
+         ImGui::Checkbox("Angle Check", &angle_check);
+
+         if (enable_avcsim_filter)
+         {
+            float time_constant_f = time_constant;
+            if (ImGui::SliderFloat("AVCSIM Time Constant", &time_constant_f, 0.0001f, 2.0f))
+            {
+               time_constant = time_constant_f;
+               FilterAvcsimAngles();
+            }
+         }
+
          if (ImPlot::BeginPlot("AVCSIM Angles##Plot"))
          {
             ImPlot::SetupAxes("x - Iteration", "y - Degrees");
@@ -1293,6 +1383,14 @@ int main(int argc, char* argv[])
             ImPlot::PlotLine("Az Delta", file_time, file_az_delta, SAMPLES, ImPlotLineFlags_None, offset);
             ImPlot::PlotLine("El Delta", file_time, file_el_delta, SAMPLES, ImPlotLineFlags_None, offset);
             ImPlot::PlotLine("Time Delta", file_time, file_time_delta, SAMPLES, ImPlotLineFlags_None, offset);
+
+            if (enable_avcsim_filter)
+            {
+               ImPlot::PlotLine("Az (filtered)", file_time, file_az_filtered, SAMPLES, ImPlotLineFlags_None, offset);
+               ImPlot::PlotLine("El (filtered)", file_time, file_el_filtered, SAMPLES, ImPlotLineFlags_None, offset);
+               ImPlot::PlotLine("Az Delta (filtered)", file_time, file_az_delta_filtered, SAMPLES, ImPlotLineFlags_None, offset);
+               ImPlot::PlotLine("El Delta (filtered)", file_time, file_el_delta_filtered, SAMPLES, ImPlotLineFlags_None, offset);
+            }
 
             ImPlot::EndPlot();
          }
